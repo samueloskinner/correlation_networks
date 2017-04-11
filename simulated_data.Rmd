@@ -1,0 +1,991 @@
+---
+title: 'Simulated data for WCGNA demonstration'
+author: "Samuel O Skinner"
+date: "April 11, 2017"
+output:
+  html_document:
+    number_sections: yes
+---
+
+
+```{r global_opts, echo=FALSE, cache=FALSE}
+knitr::opts_chunk$set(fig.width=8, fig.height=4, fig.align='center',
+                      echo=TRUE, warning=FALSE, message=FALSE,
+                      cache=FALSE, autodep=TRUE)
+# knitr::opts_knit$set(root.dir = "..")
+
+## numbers >= 10^5 will be denoted in scientific notation,
+## and rounded to 2 digits
+options(scipen = 1, digits = 5)
+```
+
+
+# Summary
+
+
+----- 
+
+# R environment set-up
+
+## Loading packages
+
+```{r load_packages, cache=FALSE}
+# Clean up the environment
+rm(list = ls())
+cleanup <- gc(verbose = FALSE)
+
+# Load libraries I'll need here
+library(MASS)
+library(dplyr)
+library(limma)
+library(edgeR)
+library(readr)
+library(readxl)
+library(ggplot2)
+library(cowplot)
+library(reshape2)
+library(WGCNA)
+library(gplots)
+library(corrplot)
+library(caret)
+library(leaps)
+
+library(glmnet)
+
+# Packages for R markdown stuff
+library(knitr)
+library(shiny)
+
+# Required for WGCNA to work properly
+options(stringsAsFactors = FALSE)
+```
+
+
+``` {r helper_plotting_function, echo=FALSE}
+
+
+plotMEvsTT <- function(module, feature) {
+
+  modNames <- substring(names(MEs), 3)
+  
+  Trait_data <- datTraits[,colnames(datTraits)==feature]
+  ME_counts <- MEs[, match(module, modNames)]
+  
+  out_plot <- ggplot(data.frame(x=ME_counts,
+                                y=Trait_data),
+                     aes(x=x,
+                         y=y)) + 
+    geom_point() +
+    geom_smooth(method=lm) + 
+    labs(x=paste(module, "module"),
+         y=feature,
+         main="Module vs. Trait")
+  
+  return(out_plot)
+
+}
+
+
+plotGSvsMM <- function(module, feature, MEs, datCounts) {
+
+  modNames <- substring(names(MEs), 3)
+  geneModuleMembership <- as.data.frame(cor(datCounts, MEs, use = "p"))
+  MMPvalue <- as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples))
+                    
+  names(geneModuleMembership) = paste("MM", modNames, sep="");
+  names(MMPvalue) = paste("p.MM", modNames, sep="");
+  
+  Trait_data <- datTraits[,colnames(datTraits)==feature]
+  geneTraitSignificance = as.data.frame(cor(datCounts, Trait_data, use = "p"));
+  GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples));
+  
+  out_plot <- ggplot(data.frame(x=abs(geneModuleMembership[moduleColors==module, match(module, modNames)]),
+                    y=abs(geneTraitSignificance[moduleColors==module, 1])),
+         aes(x=x,
+             y=y)) + 
+    geom_point() +
+    geom_smooth() + 
+    labs(x=paste("MM in", module, "module"),
+         y=paste("GS for ", feature),
+         main="Module membership vs. gene significance")
+  
+  return(out_plot)
+
+}
+
+
+
+```
+
+
+
+
+# Loading data
+
+## Load count, annotation, metric, etc files.
+
+```{r load_data}
+
+# Read in file created during QC scripts
+load("data/CAV-Cohort-2-RNAseq_Bcell_1_QC_20170209a.RData")
+
+# This curDGE has already been filtered by Matt Dufort for poor or contaminated libraries and by me for low-count libraries
+#    as well as transformed with voom
+dim(t) # 28 obs. of 130 vars
+dim(metriSum) # 378 obs of 5 vars
+dim(curDGE)   # 11338 obs. of 28 vars
+
+
+```
+
+## Load in file with C-peptide decline and clinical parameters
+
+```{r read in cpeptide decline file}
+
+# Load in C-peptide decline data
+cpepDat <- read.csv("../CAV-Cohort-2-DemographicData/data/CAV-Cohort-2_outcomes_parameters_20170221a.csv")
+
+cpepSub <- cpepDat %>% select(c(participant_id,
+                                study,
+                                sex,
+                                age_years,
+                                bmi,
+                                cpep_model_absdiff_1year,
+                                cpep_model_absdiff_2year,
+                                cpep_model_decayrate,
+                                cpep_auc2hr_log_baseline))
+cpepSub <- cpepSub[!duplicated(cpepSub$participant_id),]
+
+annotDat <- annotDat %>% select(participant_id, libid)
+
+cpepSub <- left_join(annotDat, cpepSub, by="participant_id")
+
+```
+
+As noticed by Matt during his QC scripts: There are no ABATE samples. 
+
+
+
+# Visualize some of the clinical parameters
+
+```{r plotting_the_c-peptide_baseline, fig.height=12, fig.width=12, echo=FALSE}
+
+p1 <- ggplot(cpepSub, 
+       aes(x=cpep_model_decayrate)) +
+  geom_line(stat="density") +
+  labs(x="Slope of log( fraction AUC )")
+
+p2 <- ggplot(cpepSub, 
+       aes(x=cpep_auc2hr_log_baseline,
+           y=cpep_model_decayrate)) +
+  geom_point() +
+  labs(x="log(C-peptide at Baseline)",
+       y="Slope of log( fraction AUC )")
+
+p3 <- ggplot(cpepSub, 
+       aes(x=sex,
+           y=cpep_model_decayrate)) +
+  geom_boxplot() +
+  labs(x="Sex",
+       y="Slope of log( fraction AUC )")
+
+p4 <- ggplot(cpepSub, 
+       aes(x=age_years,
+           y=cpep_model_decayrate)) +
+  geom_point() +
+  labs(x="Age",
+       y="Slope of log( fraction AUC )")
+
+p5 <- ggplot(cpepSub, 
+       aes(x=study,
+           y=cpep_model_decayrate)) +
+  geom_boxplot() +
+  labs(x="Study",
+       y="Slope of log( fraction AUC )")
+
+p6 <- ggplot(cpepSub, 
+       aes(x=bmi,
+           y=cpep_model_decayrate)) +
+  geom_point() +
+  labs(x="BMI",
+       y="Slope of log( fraction AUC )")
+
+
+plot_grid(p1, p2, p3, p4, p5, p6, ncol=2)
+
+
+```
+
+
+# Analysis  
+  
+
+## Clustering on all cells
+
+```{r visualize_clustering, fig.height=4, fig.width=10, echo=FALSE}
+
+
+
+#Transpose for hclust
+datCounts <- data.frame(v=t(curDGE$E))
+
+sampleTree <- hclust(dist(datCounts), method = "average")
+
+cpepSub$study_col <- ifelse(cpepSub$study=="START", "blue", "red")
+
+# Plot the sample tree labeled by cell type
+plotDendroAndColors(sampleTree,
+                    colors = cpepSub$study_col,
+                    main = "Sample dendrogram and trait heatmap")
+
+
+```
+
+
+1) Cell type  
+Blue: START  
+Red:  T1DAL  
+
+
+## Perform WGCNA 
+
+``` {r num_top_var_genes, echo=FALSE}
+
+top_var_genes <- 7000
+
+```
+
+
+The first step is to select the most variable genes within cells. The number of genes does affect the result, and we need to determine a way to determine the optimal number. Currently, the number is set to `r top_var_genes`. 
+
+
+### Select soft-threshold for cells
+
+```{r choosing_thresholding_power, echo=FALSE}
+
+
+curDGE_orig <- curDGE
+
+#Select genes with the most variation 
+geneVariances <- apply(curDGE$E,1,var)
+curDGE <- curDGE[order(geneVariances, decreasing=TRUE),]
+curDGE <- curDGE[1:top_var_genes,]
+
+
+# Choose a set of soft-thresholding powers
+powers <- c(c(1:10), seq(from = 12, to=20, by=2))
+
+# Call the network topology analysis function
+sft <- pickSoftThreshold(t(curDGE$E), powerVector = powers, verbose=0, networkType = "signed")
+sft$x <- sft$fitIndices[,1]
+sft$y <- -sign(sft$fitIndices[,3])*sft$fitIndices[,2]
+sft$z <- sft$fitIndices[,5]
+
+#Adjacency matrix
+softPower = 12;
+adjacency = adjacency(t(curDGE$E), power = softPower, type = "signed");
+
+# Turn adjacency into topological overlap
+TOM = TOMsimilarity(adjacency, verbose=0);
+dissTOM = 1-TOM
+
+
+# Scale-free topology fit index as a function of the soft-thresholding power
+pl1 <- ggplot(data.frame(sft),
+       aes(x=x,
+           y=y,
+           label=powers)) + 
+  geom_text() + 
+  geom_abline(slope=0, 
+              intercept=sft$y[softPower],
+              color="red") +
+  labs(x="Soft Threshold (power)",
+       y="Scale Free Topology Model Fit,signed R^2",
+       main="Scale independence")
+
+# Mean connectivity as a function of the soft-thresholding power
+pl2 <- ggplot(data.frame(sft),
+       aes(x=x,
+           y=z,
+           label=powers)) + 
+  geom_text() + 
+  geom_abline(slope=0, 
+              intercept=sft$z[softPower],
+              color="red") +
+  labs(x="Soft Threshold (power)",
+       y="Mean Connectivity",
+       main="Mean connectivity")
+
+plot_grid(pl1, pl2, ncol=2)
+
+```
+
+
+The soft threshold for this data subset is selected to be `r softPower`.  
+  
+  
+
+### Perform clustering to create modules & merge similar modules
+
+First, calculate the co-expression similarity, adjacency, topological overlap matrix (TOM), and dissimilarity.  Then perform heirarchical clustering on dissimilarity based on topological overlap.  
+  
+Second, to merge eigengenes, use the height of 0.25, corresponding to a correlation of 0.75.  
+  
+Third, filter out genes that have no module membership above 0.50. Move all that don't to a white module.  
+
+
+```{r plot_gene_tree, echo=FALSE}
+
+# We like large modules, so we set the minimum module size relatively high:
+minModuleSize = 30;
+
+# Call the hierarchical clustering function
+geneTree = hclust(as.dist(dissTOM), method = "average")
+dynamicMods = cutreeDynamic(dendro = geneTree, distM = dissTOM,
+                            deepSplit = 3, pamRespectsDendro = TRUE,
+                            minClusterSize = minModuleSize,
+                            verbose = 0)
+
+dynamicColors = labels2colors(dynamicMods)
+# white is the 27th color. if white's used, replace with the next color
+if (max(dynamicMods) >= 27) {
+  dynamicColors[dynamicColors == "white"] <- standardColors(max(dynamicMods)+1)[max(dynamicMods)+1]
+}
+# dynamicColors[dynamicColors=="grey"] <- "white"
+
+
+# Calculate eigengenes
+MEList = moduleEigengenes(t(curDGE$E), colors = dynamicColors, excludeGrey=TRUE)
+MEs = MEList$eigengenes
+
+
+# Calculate dissimilarity of module eigengenes
+MEDiss = 1-cor(MEs);
+# Cluster module eigengenes
+METree = hclust(as.dist(MEDiss), method = "average");
+
+#Cut dendrogram to merge modules if desired
+MEDissThres = 0.25
+
+
+# Plot the result
+plot(METree, main = "Clustering of module eigengenes",
+     xlab = "", sub = "")
+# Plot the cut line into the dendrogram
+abline(h=MEDissThres, col = "red")
+
+
+# Call an automatic merging function
+merge = mergeCloseModules(t(curDGE$E), dynamicColors, cutHeight = MEDissThres, verbose = 0, getNewUnassdME = FALSE, useAbs = FALSE)
+# The merged module colors
+moduleColors = merge$colors;
+# Eigengenes of the new merged modules:
+MEs = merge$newMEs
+
+
+
+#Calculate modular membership
+datKME=signedKME(t(curDGE$E), MEs)
+# datKME = as.data.frame(abs(cor(t(curDGE$E), MEs))) % For unsigned analysis
+
+#Fix KME row names. WGCNA will replace dashes with periods which creates issues later
+#String db does not recognize gene names with periods instead of dashes
+rownames(datKME) <- colnames(t(curDGE$E))
+#Because it doesn't depend on module size, KME is recommended for comparing modules
+mainKME <- rep(NA, length(moduleColors))
+for (i in 1:length(moduleColors)){
+  mainKME[i] <- ifelse(moduleColors[i]=="grey", 0, datKME[i,paste0("kME",moduleColors[i])]) 
+}
+datKME$mainKME <- mainKME
+
+
+##Assign anything with KME < 0.50 to the white module
+greyGenes <- which(datKME$mainKME < 0.75)
+highKMEColors <- moduleColors
+highKMEColors[greyGenes] <- "white"
+
+
+plotDendroAndColors(geneTree, cbind(dynamicColors, moduleColors, highKMEColors),
+                   c("Dynamic Tree Cut", "Merged dynamic", "k_{ME} Filtered"),
+                   dendroLabels = FALSE, hang = 0.03,
+                   addGuide = TRUE, guideHang = 0.05)
+
+moduleColors <- highKMEColors
+
+```
+
+
+
+```{r gene expression plot, echo=FALSE, fig.width=10, fig.height=4}
+
+ClusterData <- data.frame(gene=colnames(t(curDGE$E)),
+                          symbol=curDGE$genes$symbol,
+                          mainKME=datKME$mainKME,
+                          color=highKMEColors)
+
+ClusterCount <- t(curDGE$E)[,order(ClusterData$mainKME, decreasing=TRUE)]
+ClusterData  <- ClusterData[order(ClusterData$mainKME, decreasing=TRUE),]
+
+ClusterCount <- ClusterCount[,order(ClusterData$color)]
+ClusterData  <- ClusterData[order(ClusterData$color),]
+
+# ClusterCount <- ClusterCount[,ClusterData$color != "slategrey"]
+# ClusterData  <- ClusterData[ClusterData$color != "grey",]
+
+ClusterCount_sc <- data.frame(apply(ClusterCount, 2, function(x){(x-mean(x))/sd(x)}))
+
+
+
+```
+
+
+### Display modules
+
+``` {r plots inspired by McKinney, fig.height=12, fig.width=10, echo=FALSE}
+
+ClusterData <- data.frame(gene=colnames(t(curDGE$E)),
+                          symbol=curDGE$genes$symbol,
+                          mainKME=datKME$mainKME,
+                          color=highKMEColors)
+
+ClusterCount <- t(curDGE$E)[,geneTree$order]
+ClusterData  <- ClusterData[geneTree$order,]
+
+
+
+# Prep the raw gene expression data
+ClusterCount_sc <- data.frame(apply(ClusterCount, 2, function(x){(x-mean(x))/sd(x)}))
+l_sc <- mean(apply(ClusterCount_sc, 2, function(x){sqrt(sum(x^2))}))
+
+samTree <- hclust(as.dist(1-cor(t(ClusterCount_sc))), method="average")
+    
+ClusterCount_sc <- ClusterCount_sc[samTree$order,]
+
+# heatmap.2(as.matrix(ClusterCount_sc),
+#           ColSideColors=ClusterData$color,
+#           Rowv=FALSE,
+#           Colv=FALSE,
+#           dendrogram="none",
+#           key=FALSE,
+#           keysize = 0.1,
+#           trace="none")
+
+ClusterCount_sc$sample <- rownames(ClusterCount_sc)
+ClusterCount_sc_tall <- melt(ClusterCount_sc)
+ClusterCount_sc_tall_disp <- merge(ClusterCount_sc_tall, ClusterData, by.x="variable", by.y="gene", all.x=TRUE)
+ClusterCount_sc_tall_disp$sample <- 1:dim(ClusterCount_sc)[1]
+
+# Prep the eigengenes
+MEs_disp <- MEs
+colnames(MEs_disp) <- lapply(colnames(MEs_disp), function(x) {gsub("ME","",x)})
+MEs_disp$sample <- rownames(ClusterCount_sc)
+MEs_disp <- MEs_disp[samTree$order,]
+MEs_disp_tall <- melt(MEs_disp)
+MEs_disp_tall$sample <- 1:dim(ClusterCount_sc)[1]
+MEs_disp_tall$value <- l_sc*MEs_disp_tall$value
+MEs_disp_tall$color <- MEs_disp_tall$variable
+
+
+
+ggplot(ClusterCount_sc_tall_disp,
+       aes(x=sample,
+           y=value)) +
+  geom_line(aes(color = variable),
+            alpha=0.25,
+            size=0.3) +
+  labs(y="Gene expression",
+       x="Individual samples") + 
+  theme(legend.position="none") + 
+  facet_wrap(~color, ncol=2) +
+  geom_line(data=MEs_disp_tall,
+            aes(x=sample,
+                y=value),
+            color="red",
+            size=1.5)
+  
+```
+
+
+```{r correlation between the eigengenes, echo=FALSE}
+
+corrplot(cor(MEs))
+
+
+```
+
+
+
+
+### Display top 200 genes in each module
+Ordered by the correlation of gene to eigengene.
+
+```{r display genes in each module, echo=FALSE}
+
+ClusterData_disp <- ClusterData
+
+ClusterData_disp <- ClusterData_disp[ClusterData_disp$color != "white",]
+ClusterData_disp <- ClusterData_disp[order(ClusterData_disp$mainKME, decreasing = TRUE),]
+ClusterData_disp <- ClusterData_disp[order(ClusterData_disp$color),]
+
+
+A <- lapply(unique(ClusterData_disp$color), function(x) {print(x); temp<-ClusterData_disp[ClusterData_disp$color==x,]; print(head(temp$symbol,200))})
+
+```
+
+
+
+## Modeling c-peptide decline with features
+
+Feature properties  
+
+```{r feature histograms, fig.width=10, fig.height=8, echo=FALSE}
+model_df <- cbind(cpepSub, MEs)
+
+ggplot(melt(model_df),
+       aes(x=value,
+           color=study)) + 
+  geom_line(stat="density") + 
+  facet_wrap(~variable, scales="free")
+
+
+```
+
+
+### Model each eigengene individually
+
+Model 1: cpep_model_decayrate ~ eigengene + bmi + sex + study + age_years + cpep_auc2hr_log_baseline  
+Model 2: cpep_model_decayrate ~ eigengene + study + age_years + cpep_auc2hr_log_baseline 
+```{r individual eigengene models, echo=FALSE}
+
+model_df <- cbind(cpepSub, MEs)
+
+color = colnames(MEs)[1]
+
+fit1_p_value <- list()
+fit1_MEp_value <- list()
+fit2_p_value <- list()
+fit2_MEp_value <- list()
+
+for (color in colnames(MEs)) {
+  
+  f1 <- as.formula(paste("cpep_model_decayrate ~ ", color, " + bmi + sex + study + age_years + cpep_auc2hr_log_baseline"))
+  fit1 <- lm(f1, data=model_df)
+  fit1_f <- summary(fit1)$fstatistic
+  fit1_p_value[color] <- ifelse(is.null(fit1_f), NA, pf(fit1_f[1],fit1_f[2],fit1_f[3],lower.tail=FALSE))
+  fit1_MEp_value[color] <- summary(fit1)$coefficients[2,4]
+  fit1_coef <- coef(summary(fit1))[,4]
+  
+  f2 <- as.formula(paste("cpep_model_decayrate ~ ", color, " + study + age_years + cpep_auc2hr_log_baseline"))
+  fit2 <- lm(f2, data=model_df)
+  fit2_f <- summary(fit2)$fstatistic
+  fit2_p_value[color] <- ifelse(is.null(fit2_f), NA, pf(fit2_f[1],fit2_f[2],fit2_f[3],lower.tail=FALSE))
+  fit2_MEp_value[color] <- summary(fit1)$coefficients[2,4]
+  fit2_coef <- coef(summary(fit2))[,4]
+  
+}
+
+kable(data.frame(cbind(fit1_p_value,fit1_MEp_value, fit2_p_value, fit2_MEp_value)))
+
+```
+
+
+### Various regression methods to model cpeptide decline with eigengenes and demo parameters
+
+This modeling is first performed using all demographic parameters:  
+Model: cpep_model_decayrate ~ Eigengenes + bmi + sex + study + age_years + cpep_auc2hr_log_baseline  
+
+#### Linear regression with all eigengenes
+
+```{r model cpep decline with eigengenes and demographic paramters, echo=FALSE}
+
+model_df <- cbind(cpepSub, MEs)
+
+color_str <- paste(colnames(MEs), collapse=" + ")
+
+f <- as.formula(paste("cpep_model_decayrate ~ ", color_str, " + bmi + sex + study + age_years + cpep_auc2hr_log_baseline"))
+fit <- lm(f, data=model_df)
+fit_f <- summary(fit)$fstatistic
+fit_p_value <- ifelse(is.null(fit_f), NA, pf(fit_f[1],fit_f[2],fit_f[3],lower.tail=FALSE))
+fit_coef <- coef(summary(fit))[,4]
+
+summary(fit)
+
+```
+
+#### Backward step-wise regression
+
+```{r back step, echo=FALSE}
+
+step_fit <- step(fit, trace=FALSE)
+step_f <- summary(step_fit)$fstatistic
+step_p_value <- ifelse(is.null(step_f), NA, pf(step_f[1],step_f[2],step_f[3],lower.tail=FALSE))
+step_coef <- coef(summary(step_fit))[,4]
+
+summary(step_fit)
+
+# plot(step_fit)
+
+```
+
+
+#### Forward step-wise regression
+Starting from: cpep_model_decayrate ~ study + age_years + cpep_auc2hr_log_baseline
+
+```{r forward stepwise, echo=FALSE}
+
+f <- as.formula("cpep_model_decayrate ~ study + age_years + cpep_auc2hr_log_baseline")
+forw_fit <- step(lm(f, data=model_df), 
+                 trace=FALSE, 
+                 direction="forward", 
+                 scope=list(lower=as.formula("cpep_model_decayrate ~ study + age_years + cpep_auc2hr_log_baseline"),
+                            upper=as.formula("cpep_model_decayrate ~ .")))
+forw_f <- summary(forw_fit)$fstatistic
+forw_p_value <- ifelse(is.null(forw_f), NA, pf(forw_f[1],forw_f[2],forw_f[3],lower.tail=FALSE))
+forw_coef <- coef(summary(forw_fit))[,4]
+
+summary(forw_fit)
+
+```
+
+#### All subset regression
+
+```{r all subset regression, echo=FALSE}
+
+f <- as.formula(paste("cpep_model_decayrate ~ ", color_str, " + bmi + sex + study + age_years + cpep_auc2hr_log_baseline"))
+reg1 <- regsubsets(f, 
+                   data = model_df, 
+                   nvmax = 15)
+
+plot(reg1)
+
+```
+
+
+
+#### Elastic net regression
+
+```{r en model cpep decline with eigengenes and demographic paramters, fig.width=10, fig.height=5, echo=FALSE}
+
+
+cpepSub2 <- cpepSub %>% select(sex, study, age_years, bmi, cpep_auc2hr_log_baseline)
+cpepSub2$sex <- ifelse(cpepSub2$sex=="M", 0, 1)
+cpepSub2$study <- ifelse(cpepSub2$study=="START", 0, 1)
+
+x <- as.matrix(cbind(cpepSub2, MEs))
+y <- as.matrix(cpepSub$cpep_model_decayrate)
+
+# Use glmnet
+fit1=cv.glmnet(x, y, standardize=TRUE, family="gaussian", nfolds=nrow(x))
+plot(fit1)
+
+```
+
+Check which features are included with lambda value.
+```{r coeff glmnet}
+
+coef(fit1, s = exp(-8.5))
+
+```
+Scan lambda and alpha.
+```{r using caret, fig.width=10, fig.height=6, echo=FALSE}
+
+# Use caret
+set.seed(104) # 104 is a great seed
+cctrl1 <- trainControl(method = "cv", number = 10)
+test_class_cv_model <- train(x, as.numeric(y),
+                             method = "glmnet",
+                             trControl = cctrl1,
+                             metric = "RMSE",
+                             preProc = c("center", "scale"),
+                             tuneGrid = expand.grid(.alpha = seq(0, 1,.1),
+                                                    .lambda = exp(seq(-15,-5,.25))))
+
+
+ggplot(test_class_cv_model$results,
+       aes(x = lambda,
+           y = RMSE,
+           color = as.factor(alpha))) + 
+  geom_point() + 
+  geom_line() + 
+  scale_x_log10() + 
+  labs(x = "Regularization Parameter (lambda)",
+       y = "RMSE (Cross-Validation)")
+
+
+# Use caret
+set.seed(104) # 104 is a great seed
+cctrl1 <- trainControl(method = "cv", number = 10)
+test_class_cv_model <- train(x, as.numeric(y),
+                             method = "glmnet",
+                             trControl = cctrl1,
+                             metric = "RMSE",
+                             preProc = c("center", "scale"),
+                             tuneGrid = expand.grid(.alpha = seq(.9, 1,.1),
+                                                    .lambda = exp(seq(-11,-9.5,.25))))
+
+
+ggplot(test_class_cv_model$results,
+       aes(x = lambda,
+           y = RMSE,
+           color = as.factor(alpha))) + 
+  geom_point() + 
+  geom_line() + 
+  scale_x_log10() + 
+  labs(x = "Regularization Parameter (lambda)",
+       y = "RMSE (Cross-Validation)")
+
+plot(varImp(test_class_cv_model,scale=F))
+
+```
+
+
+#### Recursive feature elimination
+
+```{r recursuve feature elimination with caret, echo=FALSE}
+
+
+cpepSub2 <- cpepSub %>% select(sex, study, age_years, bmi, cpep_auc2hr_log_baseline)
+cpepSub2$sex <- ifelse(cpepSub2$sex=="M", 0, 1)
+cpepSub2$study <- ifelse(cpepSub2$study=="START", 0, 1)
+
+x <- as.matrix(cbind(cpepSub2, MEs))
+# y <- as.matrix(cpepSub$cpep_model_absdiff_2year)
+# y <- as.matrix(-365.24*cpepSub$cpep_model_decayrate)
+y <- as.matrix(cpepSub$cpep_model_decayrate)
+
+
+cor_features <- findCorrelation(cor(x))
+print(colnames(x)[cor_features])
+
+if (length(cor_features)<1) {dat_x <- x} else {dat_x <- x[,-cor_features]}
+# dat_x <- x
+
+set.seed(48)
+
+subsets <- seq(2,100,1)
+
+ctrl <- rfeControl(functions = lmFuncs,
+                   method = "repeatedcv",
+                   repeats = 5,
+                   rerank = TRUE,
+                   verbose = FALSE)
+
+lmProfile <- rfe(dat_x, 
+                 y,
+                 sizes = subsets,
+                 rfeControl = ctrl)
+
+print(lmProfile)
+
+# plot the results
+plot(lmProfile, type=c("g", "o"))
+
+
+
+```
+
+
+### Simple lm model from the consensus of different regression strategies
+
+
+```{r consensus model}
+
+
+model_df <- cbind(cpepSub, MEs)
+
+color_str <- paste(colnames(MEs), collapse=" + ")
+
+f <- as.formula(paste("cpep_model_decayrate ~ MElightcyan + MEmagenta + bmi + sex + study + age_years + cpep_auc2hr_log_baseline"))
+fit <- lm(f, data=model_df)
+fit_f <- summary(fit)$fstatistic
+fit_p_value <- ifelse(is.null(fit_f), NA, pf(fit_f[1],fit_f[2],fit_f[3],lower.tail=FALSE))
+fit_coef <- coef(summary(fit))[,4]
+
+summary(fit)
+
+
+
+ggplot(data.frame(x=predict(test_class_cv_model, x),
+                  y=y),
+       aes(x=x,y=y)) +
+  geom_point() +
+  geom_abline(slope=1, intercept=0, color="red")
+
+```
+
+
+
+
+## Associations of features
+
+### Association of eigengenes with categorical parameters
+
+
+```{r associating the categorical parameters with eigengenes, echo=FALSE}
+
+datTraits <- cpepSub %>% select(c(sex, study))
+wt.dat <- cbind(MEs, datTraits)
+
+wt_sex <- list()
+wt_stu <- list()
+
+for (color in colnames(MEs)) {
+  
+  f <- as.formula(paste(color," ~ sex", sep=""))
+  wt_sex[color] <- wilcox.test(f, data=wt.dat)$p.value
+    
+  f <- as.formula(paste(color," ~ study", sep=""))
+  wt_stu[color] <- wilcox.test(f, data=wt.dat)$p.value
+  
+}
+
+wt_sex <- unlist(wt_sex)
+wt_stu <- unlist(wt_stu)
+
+
+```
+P-values of a Mann-Whitney test between eigengene ~ sex.  
+`r kable(data.frame(pvalue=wt_sex, adj.pvalue=p.adjust(wt_sex, method="BH")))`
+
+P-values of a Mann-Whitney test between eigengene ~ study.  
+`r kable(data.frame(pvalue=wt_stu, adj.pvalue=p.adjust(wt_stu, method="BH")))` 
+
+### Correlation of eigengenes with continuous demographic parameters
+
+Correlations
+```{r correlate_eigengenes, fig.width=10, fig.height=10, echo=FALSE}
+
+datTraits <- cpepSub %>% select(c(age_years, 
+                                  bmi,
+                                  cpep_model_decayrate, 
+                                  cpep_model_absdiff_1year,
+                                  cpep_model_absdiff_2year,
+                                  cpep_auc2hr_log_baseline))
+
+
+# Define numbers of genes and samples
+nSamples = nrow(t(curDGE$E));
+
+# Recalculate MEs with color labels
+moduleTraitCor = cor(MEs, datTraits, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+
+
+
+# Correlation plot
+corrplot(moduleTraitCor, p.mat = moduleTraitPvalue, insig="p-value", sig.level=0)
+
+```
+
+
+Displaying the significant correlations (p < 0.15) as scatter-plots.
+
+```{r gene_significance_and_module_membership, fig.width=15, fig.height=8, echo=FALSE}
+
+# Now, filter by for significant correlation sets
+sig.df <- melt(moduleTraitPvalue)
+sig.df <- sig.df[sig.df$value < 0.15,]
+
+datTraits <- cbind(datTraits, MEs)
+
+
+plt <- list()
+for (i in 1:dim(sig.df)[1]) {
+  
+  feature  <- as.character(sig.df[i,2])
+  module   <- strsplit(as.character(sig.df[i,1]),"ME")[[1]][2]
+  plt[[i]] <- plotMEvsTT(module=module, feature=feature)
+  
+}
+
+plot_grid(plotlist=plt)
+
+```
+
+
+
+## Enrichment analysis  
+
+### Immune-pathway gene set enrichment analysis for modules of interest
+
+```{r GSEA, echo=FALSE}
+
+
+labelR <- curDGE_orig$genes
+labelR <- labelR[!duplicated(labelR$symbol),]
+labelR <- left_join(labelR, data.frame(symbol=curDGE$genes$symbol, color=moduleColors), by="symbol")
+labelR$color[is.na(labelR$color)] <- "white"
+
+GSEA <- userListEnrichment(labelR$symbol, 
+                           labelR$color, 
+                           fnIn=NULL,
+                           omitCategories = "white",
+                           useImmunePathwayLists = TRUE,
+                           outputCorrectedPvalues=TRUE)
+
+GSEA_sig <- paste(GSEA$pValues[GSEA$pValues$CorrectedPvalues<0.15,]$InputCategories, 
+                  GSEA$pValues[GSEA$pValues$CorrectedPvalues<0.15,]$UserDefinedCategories, 
+                  sep=" -- ")
+
+
+kable(GSEA$pValues[GSEA$pValues$CorrectedPvalues<0.15,])
+
+GSEA$ovGenes[GSEA_sig]
+
+
+```
+
+
+### Gene ontology analysis for modules of interest
+
+```{r GO_analysis, echo=FALSE}
+
+GOenr = GOenrichmentAnalysis(moduleColors, curDGE$genes$entrez, organism = "human", nBestP = 10, verbose=0)
+
+tab = GOenr$bestPTerms[[4]]$enrichment
+
+
+keepCols = c(1, 2, 5, 6, 7, 12, 13)
+screenTab = tab[, keepCols];
+# Round the numeric columns to 2 decimal places:
+numCols = c(3, 4);
+screenTab[, numCols] = signif(apply(screenTab[, numCols], 2, as.numeric), 2)
+# Truncate the the term name to at most 40 characters
+screenTab[, 7] = substring(screenTab[, 7], 1, 40)
+# Shorten the column names:
+colnames(screenTab) = c("module", "size", "p-val", "Bonf", "nInTerm", "ont", "term name");
+rownames(screenTab) = NULL;
+# Set the width of R’s output. The reader should play with this number to obtain satisfactory output.
+options(width=95)
+# Finally, display the enrichment table:
+screenTab
+
+```
+
+
+
+
+## Save eigengenes for use in module-based model
+```{r save eigenganes, echo=FALSE}
+
+rownames(MEs) <- cpepSub$participant_id
+
+modules <- list()
+for (module in colnames(MEs)) {
+
+  modules[[module]] <- ClusterData[ClusterData$color == strsplit(module,"ME")[[1]][2],]$symbol
+
+}
+
+save(list=c("MEs", "modules"), file="data/CAV-Cohort-2-RNAseq_Bcell_WGCNAModules_20170405a.RData")
+
+
+# Save a csv for Cate to check out
+write.csv(data.frame(moduleID = names(unlist(modules)),
+                     gene_symbol = unlist(modules)),
+          quote=FALSE,
+          row.names=FALSE,
+          file="data/CAV-Cohort-2-RNAseq_Bcell_WGCNAModules_20170405a.csv")
+
+```
+
