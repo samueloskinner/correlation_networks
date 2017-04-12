@@ -63,7 +63,7 @@ options(stringsAsFactors = FALSE)
 
 # Create simulated data
 
-## Two independent networks
+## Two anticorrelated networks
 ```{r simulate_data}
 
 # For all simulated networks, start with correlation matrix
@@ -91,6 +91,35 @@ corrplot(W)
 ```
 
 
+## Two independent networks
+```{r simulate_data}
+
+# For all simulated networks, start with correlation matrix
+
+C <- matrix(c(1, 1, 1, 1,0,0,0,0,
+              1, 1, 1, 1,0,0,0,0,
+              1, 1, 1, 1,0,0,0,0,
+              1, 1, 1, 1,0,0,0,0,
+             0,0,0,0, 1, 1, 1, 1,
+             0,0,0,0, 1, 1, 1, 1,
+             0,0,0,0, 1, 1, 1, 1,
+             0,0,0,0, 1, 1, 1, 1), 
+            nrow = 8, 
+            ncol = 8,
+            byrow = TRUE)
+
+A <- (abs(0.5 + 0.5*C))^6
+W <- TOMsimilarity(A, verbose=0)
+
+
+corrplot(C)
+
+corrplot(W)
+
+```
+
+
+
 
 ## Hodgepodge
 ```{r simulate_data}
@@ -98,16 +127,18 @@ corrplot(W)
 # For all simulated networks, start with correlation matrix
 
 C <- matrix(c( 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-               0.0, 1.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1,
-               0.0, 0.1, 1.0,-0.4,-0.4,-0.4,-0.4,-0.4,
-               0.0, 0.1,-0.4, 1.0, 0.0, 0.0, 0.0, 0.0,
-               0.0, 0.1,-0.4, 0.0, 1.0,-1.0,-1.0,-1.0,
-               0.0, 0.1,-0.4, 0.0,-1.0, 1.0,-1.0,-1.0,
-               0.0, 0.1,-0.4, 0.0,-1.0,-1.0, 1.0,-1.0,
-               0.0, 0.1,-0.4, 0.0,-1.0,-1.0,-1.0, 1.0), 
+               1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+               0.8, 0.8, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+               0.8, 0.8, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+              -1.0,-1.0, 0.5, 0.5, 1.0, 0.0, 0.0, 0.0,
+              -1.0,-1.0, 0.5, 0.5, 1.0, 1.0, 0.0, 0.0,
+               0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+               0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0), 
             nrow = 8, 
             ncol = 8,
             byrow = TRUE)
+
+C <- ifelse(abs(t(C))>abs(C), t(C), C)
 
 A <- (abs(0.5 + 0.5*C))^6
 W <- TOMsimilarity(A, verbose=0)
