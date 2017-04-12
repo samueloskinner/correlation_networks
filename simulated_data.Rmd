@@ -61,109 +61,22 @@ options(stringsAsFactors = FALSE)
 ```
 
 
-``` {r helper_plotting_function, echo=FALSE}
+# Create simulated data
 
+```{r simulate_data}
 
-plotMEvsTT <- function(module, feature) {
+# 1) Two indendent networks
+A <- matrix(NA, 400, 400)
+A[1:400,   1:200] <- seq(  1,400)
+A[1:400, 201:400] <- seq(400,  1)
 
-  modNames <- substring(names(MEs), 3)
-  
-  Trait_data <- datTraits[,colnames(datTraits)==feature]
-  ME_counts <- MEs[, match(module, modNames)]
-  
-  out_plot <- ggplot(data.frame(x=ME_counts,
-                                y=Trait_data),
-                     aes(x=x,
-                         y=y)) + 
-    geom_point() +
-    geom_smooth(method=lm) + 
-    labs(x=paste(module, "module"),
-         y=feature,
-         main="Module vs. Trait")
-  
-  return(out_plot)
+cA <- stats::cor(A)
 
-}
+cA
 
-
-plotGSvsMM <- function(module, feature, MEs, datCounts) {
-
-  modNames <- substring(names(MEs), 3)
-  geneModuleMembership <- as.data.frame(cor(datCounts, MEs, use = "p"))
-  MMPvalue <- as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples))
-                    
-  names(geneModuleMembership) = paste("MM", modNames, sep="");
-  names(MMPvalue) = paste("p.MM", modNames, sep="");
-  
-  Trait_data <- datTraits[,colnames(datTraits)==feature]
-  geneTraitSignificance = as.data.frame(cor(datCounts, Trait_data, use = "p"));
-  GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples));
-  
-  out_plot <- ggplot(data.frame(x=abs(geneModuleMembership[moduleColors==module, match(module, modNames)]),
-                    y=abs(geneTraitSignificance[moduleColors==module, 1])),
-         aes(x=x,
-             y=y)) + 
-    geom_point() +
-    geom_smooth() + 
-    labs(x=paste("MM in", module, "module"),
-         y=paste("GS for ", feature),
-         main="Module membership vs. gene significance")
-  
-  return(out_plot)
-
-}
-
-
+corrplot(A)
 
 ```
-
-
-
-
-# Loading data
-
-## Load count, annotation, metric, etc files.
-
-```{r load_data}
-
-# Read in file created during QC scripts
-load("data/CAV-Cohort-2-RNAseq_Bcell_1_QC_20170209a.RData")
-
-# This curDGE has already been filtered by Matt Dufort for poor or contaminated libraries and by me for low-count libraries
-#    as well as transformed with voom
-dim(t) # 28 obs. of 130 vars
-dim(metriSum) # 378 obs of 5 vars
-dim(curDGE)   # 11338 obs. of 28 vars
-
-
-```
-
-## Load in file with C-peptide decline and clinical parameters
-
-```{r read in cpeptide decline file}
-
-# Load in C-peptide decline data
-cpepDat <- read.csv("../CAV-Cohort-2-DemographicData/data/CAV-Cohort-2_outcomes_parameters_20170221a.csv")
-
-cpepSub <- cpepDat %>% select(c(participant_id,
-                                study,
-                                sex,
-                                age_years,
-                                bmi,
-                                cpep_model_absdiff_1year,
-                                cpep_model_absdiff_2year,
-                                cpep_model_decayrate,
-                                cpep_auc2hr_log_baseline))
-cpepSub <- cpepSub[!duplicated(cpepSub$participant_id),]
-
-annotDat <- annotDat %>% select(participant_id, libid)
-
-cpepSub <- left_join(annotDat, cpepSub, by="participant_id")
-
-```
-
-As noticed by Matt during his QC scripts: There are no ABATE samples. 
-
 
 
 # Visualize some of the clinical parameters
